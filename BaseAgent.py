@@ -8,6 +8,8 @@ import faiss
 import numpy as np
 import pickle
 import os
+from typing import List, Dict
+from sklearn.metrics.pairwise import cosine_similarity
 
 # --- FAISS Memory Manager ---
 class FAISSManager:
@@ -19,22 +21,29 @@ class FAISSManager:
         self.load_or_create_index()
 
     def load_or_create_index(self):
-        """Load existing index and texts or create new ones."""
-        if os.path.exists('faiss_index.pkl') and os.path.exists('texts.pkl'):
-            with open('faiss_index.pkl', 'rb') as f:
+        base_path = os.path.dirname(__file__)  # Get the directory of the script
+        faiss_path = os.path.join(base_path, "faiss_index.pkl")
+        texts_path = os.path.join(base_path, "texts.pkl")
+
+        if os.path.exists(faiss_path) and os.path.exists(texts_path):
+            with open(faiss_path, 'rb') as f:
                 self.index = pickle.load(f)
-            with open('texts.pkl', 'rb') as f:
+            with open(texts_path, 'rb') as f:
                 self.texts = pickle.load(f)
         else:
             self.index = faiss.IndexFlatL2(self.dimension)
             self.texts = []
 
     def save_index(self):
-        """Save index and texts to disk."""
-        with open('faiss_index.pkl', 'wb') as f:
+        base_path = os.path.dirname(__file__)  # Get script's directory
+        faiss_path = os.path.join(base_path, "faiss_index.pkl")
+        texts_path = os.path.join(base_path, "texts.pkl")
+
+        with open(faiss_path, 'wb') as f:
             pickle.dump(self.index, f)
-        with open('texts.pkl', 'wb') as f:
+        with open(texts_path, 'wb') as f:
             pickle.dump(self.texts, f)
+
 
     def add_to_memory(self, text):
         """Add text to FAISS index with embeddings."""
@@ -152,32 +161,139 @@ class AgentCoordinator:
         self.general_agent = GeneralAgent()
         self.admission_agent = AdmissionAgent()
         self.ai_agent = AIAgent()
+        self.metrics = ChatbotMetrics()  # Add metrics
 
     def route_query(self, user_query):
-        """
-        Routes the user query to the appropriate agent based on keywords.
-        This is a simple heuristic-based approach and can be improved.
-        """
         query_lower = user_query.lower()
+        
+        # Determine agent type
         if "admission" in query_lower or "concordia" in query_lower:
-            return self.admission_agent.handle_query(user_query)
+            agent_type = "admission"
+            response = self.admission_agent.handle_query(user_query)
         elif any(keyword in query_lower for keyword in ["ai", "machine learning", "deep learning", "unsupervised", "supervised"]):
-            return self.ai_agent.handle_query(user_query)
+            agent_type = "ai"
+            response = self.ai_agent.handle_query(user_query)
         else:
-            return self.general_agent.handle_query(user_query)
+            agent_type = "general"
+            response = self.general_agent.handle_query(user_query)
+            
+        # Log the interaction for metrics
+        self.metrics.log_interaction(user_query, response, agent_type)
+        return response
+    
+    def add_user_feedback(self, score: int):
+        """Add user satisfaction score"""
+        self.metrics.add_user_feedback(score)
+    
+    def get_performance_metrics(self):
+        """Get all chatbot performance metrics"""
+        return self.metrics.get_metrics()
+
+# --- Chatbot Metrics ---
+class ChatbotMetrics:
+    def __init__(self):
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.responses: List[Dict] = []
+        self.feedback_scores = []
+        self.metrics_file = os.path.join(os.path.dirname(__file__), "chatbot_metrics.pkl")
+        self.load_metrics()
+        
+    def load_metrics(self):
+        """Load previous metrics if they exist"""
+        if os.path.exists(self.metrics_file):
+            with open(self.metrics_file, 'rb') as f:
+                saved_data = pickle.load(f)
+                self.responses = saved_data.get('responses', [])
+                self.feedback_scores = saved_data.get('feedback_scores', [])
+                
+    def save_metrics(self):
+        """Save metrics to file"""
+        with open(self.metrics_file, 'wb') as f:
+            pickle.dump({
+                'responses': self.responses,
+                'feedback_scores': self.feedback_scores
+            }, f)
+            
+    def add_user_feedback(self, score: int):
+        """Add user satisfaction score (1-5)"""
+        self.feedback_scores.append(score)
+        self.save_metrics()  # Save after each feedback
+        
+    def log_interaction(self, query: str, response: str, agent_type: str):
+        """Log each interaction for metric calculation"""
+        self.responses.append({
+            'query': query,
+            'response': response,
+            'agent_type': agent_type
+        })
+        self.save_metrics()  # Save after each interaction
+    
+    def calculate_coherence(self, response1: str, response2: str) -> float:
+        """Calculate semantic coherence between two responses using cosine similarity"""
+        emb1 = self.embedding_model.encode([response1])[0]
+        emb2 = self.embedding_model.encode([response2])[0]
+        return float(cosine_similarity([emb1], [emb2])[0][0])
+    
+    def get_metrics(self) -> Dict:
+        metrics = {
+            'total_interactions': len(self.responses),
+            'agent_distribution': {},
+            'avg_user_satisfaction': 0,
+            'agent_coherence': {}
+        }
+
+        # Group responses by agent type
+        agent_responses = {}
+        for response in self.responses:
+            agent = response['agent_type']
+            if agent not in agent_responses:
+                agent_responses[agent] = []
+            agent_responses[agent].append(response['response'])
+
+        # Calculate agent distribution
+        for agent in agent_responses:
+            metrics['agent_distribution'][agent] = len(agent_responses[agent])
+
+        # Calculate average user satisfaction
+        if self.feedback_scores:
+            metrics['avg_user_satisfaction'] = np.mean(self.feedback_scores)
+
+        # Calculate coherence within each agent's responses
+        for agent, responses in agent_responses.items():
+            if len(responses) > 1:
+                coherence_scores = [
+                    self.calculate_coherence(responses[i], responses[i + 1])
+                    for i in range(len(responses) - 1)
+                ]
+                metrics['agent_coherence'][agent] = np.mean(coherence_scores)
+
+        return metrics
 
 # --- Testing the Multi-Agent Coordinator ---
 if __name__ == "__main__":
     coordinator = AgentCoordinator()
+    print("Chatbot initialized. Type 'quit' to exit.\n")
 
-    # Example queries demonstrating routing
-    queries = [
-        "What is the capital of United States?",
-        "What are the admission requirements for Canadian Quebec students?",
-        "Explain what the concept of unsupervised learning is."
-    ]
-
-    for query in queries:
-        print(f"\nUser Query: {query}")
-        response = coordinator.route_query(query)
-        print("Response:", response)
+    while True:
+        # Get user query
+        user_query = input("\nEnter your question: ").strip()
+        
+        # Check for exit condition
+        if user_query.lower() == 'quit':
+            break
+            
+        # Get and display response
+        response = coordinator.route_query(user_query)
+        print("\nResponse:", response)
+        
+        # Get user feedback
+        while True:
+            try:
+                feedback = int(input("\nPlease rate this response (1-5, where 5 is best): "))
+                if 1 <= feedback <= 5:
+                    coordinator.add_user_feedback(feedback)
+                    break
+                else:
+                    print("Please enter a number between 1 and 5.")
+            except ValueError:
+                print("Please enter a valid number.")
