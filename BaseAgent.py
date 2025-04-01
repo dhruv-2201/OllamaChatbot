@@ -10,11 +10,12 @@ import pickle
 import os
 from typing import List, Dict
 from sklearn.metrics.pairwise import cosine_similarity
+import torch
 
 # --- FAISS Memory Manager ---
 class FAISSManager:
     def __init__(self):
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         self.dimension = 384  # Default dimension for all-MiniLM-L6-v2
         self.index = faiss.IndexFlatL2(self.dimension)
         self.texts = []
@@ -162,37 +163,66 @@ class AgentCoordinator:
         self.admission_agent = AdmissionAgent()
         self.ai_agent = AIAgent()
         self.metrics = ChatbotMetrics()  # Add metrics
+        self.rl = ReinforcementLearner()
+        self.last_interaction = None
 
     def route_query(self, user_query):
         query_lower = user_query.lower()
         
-        # Determine agent type
-        if "admission" in query_lower or "concordia" in query_lower:
-            agent_type = "admission"
+        # Get base scores from keyword matching
+        scores = {
+            'admission': 1.0 if any(word in query_lower 
+                                  for word in ['admission', 'concordia']) else 0.0,
+            'ai': 1.0 if any(word in query_lower 
+                            for word in ['ai', 'machine learning', 'deep learning']) else 0.0,
+            'general': 0.3  # Default score for general agent
+        }
+        
+        # Combine with RL confidence scores
+        rl_scores = self.rl.get_agent_scores(query_lower)
+        for agent in scores:
+            scores[agent] = 0.6 * scores[agent] + 0.4 * rl_scores[agent]
+        
+        # Select agent with highest combined score
+        agent_type = max(scores.items(), key=lambda x: x[1])[0]
+        
+        # Get response from selected agent
+        if agent_type == 'admission':
             response = self.admission_agent.handle_query(user_query)
-        elif any(keyword in query_lower for keyword in ["ai", "machine learning", "deep learning", "unsupervised", "supervised"]):
-            agent_type = "ai"
+        elif agent_type == 'ai':
             response = self.ai_agent.handle_query(user_query)
         else:
-            agent_type = "general"
             response = self.general_agent.handle_query(user_query)
-            
+        
+        # Store for RL update
+        self.last_interaction = {
+            'agent_type': agent_type,
+            'response': response
+        }
+        
         # Log the interaction for metrics
         self.metrics.log_interaction(user_query, response, agent_type)
         return response
     
     def add_user_feedback(self, score: int):
-        """Add user satisfaction score"""
+        """Add user feedback and update RL model"""
         self.metrics.add_user_feedback(score)
-    
-    def get_performance_metrics(self):
-        """Get all chatbot performance metrics"""
-        return self.metrics.get_metrics()
+        
+        if self.last_interaction:
+            # Get latest metrics
+            metrics = self.metrics.get_metrics()
+            
+            # Get coherence for the agent that handled the last interaction
+            agent_type = self.last_interaction['agent_type']
+            coherence = metrics['agent_coherence'].get(agent_type, 0.5)
+            
+            # Update RL model
+            self.rl.update(agent_type, score, coherence)
 
 # --- Chatbot Metrics ---
 class ChatbotMetrics:
     def __init__(self):
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         self.responses: List[Dict] = []
         self.feedback_scores = []
         self.metrics_file = os.path.join(os.path.dirname(__file__), "chatbot_metrics.pkl")
@@ -268,6 +298,58 @@ class ChatbotMetrics:
                 metrics['agent_coherence'][agent] = np.mean(coherence_scores)
 
         return metrics
+
+# --- Reinforcement Learner ---
+class ReinforcementLearner:
+    def __init__(self):
+        self.learning_rate = 0.1
+        self.agent_weights = {
+            'general': {'confidence': 0.5, 'rewards': []},
+            'admission': {'confidence': 0.5, 'rewards': []},
+            'ai': {'confidence': 0.5, 'rewards': []}
+        }
+        self.weights_file = os.path.join(os.path.dirname(__file__), "agent_weights.pkl")
+        self.load_weights()
+    
+    def load_weights(self):
+        """Load saved weights if they exist"""
+        if os.path.exists(self.weights_file):
+            with open(self.weights_file, 'rb') as f:
+                self.agent_weights = pickle.load(f)
+    
+    def save_weights(self):
+        """Save weights to file"""
+        with open(self.weights_file, 'wb') as f:
+            pickle.dump(self.agent_weights, f)
+    
+    def update(self, agent_type: str, feedback: float, coherence: float):
+        try:
+            # Normalize feedback to 0-1 range
+            normalized_feedback = feedback / 5.0
+            
+            # Calculate reward as weighted sum of feedback and coherence
+            reward = 0.7 * normalized_feedback + 0.3 * coherence
+            
+            # Update agent confidence using exponential moving average
+            current = self.agent_weights[agent_type]
+            current['rewards'].append(reward)
+            
+            # Update confidence score
+            if len(current['rewards']) > 0:
+                current['confidence'] = (1 - self.learning_rate) * current['confidence'] + \
+                                    self.learning_rate * np.mean(current['rewards'][-5:])
+            
+            self.save_weights()
+            
+        finally:
+            # Clear GPU cache regardless of whether the update succeeded or failed
+            if torch.backends.mps.is_available():  # For Apple Metal (M1/M2)
+                torch.mps.empty_cache()
+    
+    def get_agent_scores(self, query: str) -> Dict[str, float]:
+        """Get current confidence scores for each agent"""
+        return {agent: data['confidence'] 
+                for agent, data in self.agent_weights.items()}
 
 # --- Testing the Multi-Agent Coordinator ---
 if __name__ == "__main__":
