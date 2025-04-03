@@ -1,0 +1,11 @@
+fastapi>=0.68.0
+uvicorn>=0.15.0
+pydantic>=1.8.0
+langchain
+langchain-ollama
+sentence-transformers
+faiss-cpu
+scikit-learn
+numpy
+torch
+wikipedia-api
