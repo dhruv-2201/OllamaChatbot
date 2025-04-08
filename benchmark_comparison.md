@@ -12,7 +12,6 @@ This document presents benchmark comparisons across two experimental setups:
 | Metric              | Single-Agent | Multi-Agent |
 | ------------------- | ------------ | ----------- |
 | Avg Satisfaction    | 3.6          | 4.5         |
-| Admissions Accuracy | Low          | High        |
 | AI Answer Precision | Medium       | High        |
 | Coherence           | 0.74         | 0.84        |
 
