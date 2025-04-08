@@ -12,10 +12,13 @@ from typing import List, Dict
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
 
+shared_embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+shared_ollama_model = OllamaLLM(model="llama3.1")
+
 # --- FAISS Memory Manager ---
 class FAISSManager:
     def __init__(self):
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+        self.embedding_model = shared_embedding_model
         self.dimension = 384  # Default dimension for all-MiniLM-L6-v2
         self.index = faiss.IndexFlatL2(self.dimension)
         self.texts = []
@@ -84,9 +87,8 @@ class SimpleConversationMemory:
 
 # --- Base Agent ---
 class BaseAgent:
-    def __init__(self, model_name="llama3.1"):
-        self.model_name = model_name
-        self.llm = OllamaLLM(model=model_name)
+    def __init__(self):
+        self.llm = shared_ollama_model
         self.memory = SimpleConversationMemory()
         self.wikipedia_tool = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
         self.use_memory = False
@@ -127,9 +129,19 @@ class GeneralAgent(BaseAgent):
     def handle_query(self, user_query):
         if self.is_factual_query(user_query):
             wikipedia_response = self.wikipedia_tool.run(user_query)
-            prompt = f"Based on the following information: {wikipedia_response}\n\nAnswer the question: {user_query}"
+            prompt = (
+                f"Using the context below, answer concisely and directly.\n\n"
+                f"Context:\n{wikipedia_response}\n\n"
+                f"Question: {user_query}\nAnswer:"
+)
+
         else:
-            prompt = f"Answer the following general question: {user_query}"
+            prompt = (
+                f"You are a helpful assistant. Answer the following question clearly and directly, "
+                f"without repeating the question.\n\n"
+                f"Question: {user_query}\nAnswer:"
+)
+
         return self.generate_response(prompt)
 
 # --- Admission Agent ---
@@ -139,7 +151,12 @@ class AdmissionAgent(BaseAgent):
         self.use_memory = False
 
     def handle_query(self, user_query):
-        prompt = f"Provide admission details for Concordia: {user_query}"
+        prompt = (
+            f"You are an admission advisor for Concordia University's Computer Science program. "
+            f"Answer the following question clearly and helpfully. Keep your response informative and direct.\n\n"
+            f"Question: {user_query}\nAnswer:"
+)
+
         return self.generate_response(prompt)
 
 # --- AI Agent ---
@@ -151,9 +168,19 @@ class AIAgent(BaseAgent):
     def handle_query(self, user_query):
         if self.is_factual_query(user_query):
             wikipedia_response = self.wikipedia_tool.run(user_query)
-            prompt = f"Based on the following information: {wikipedia_response}\n\nAnswer the question: {user_query}"
+            prompt = (
+                f"Using the context below, answer concisely and directly'.\n\n"
+                f"Context:\n{wikipedia_response}\n\n"
+                f"Question: {user_query}\nAnswer:"
+)
+
         else:
-            prompt = f"Answer AI-related questions: {user_query}"
+            prompt = (
+                f"You are an expert in artificial intelligence. Provide a clear and concise response to the AI-related question below. "
+                f"Do not repeat the question. Just answer directly.\n\n"
+                f"Question: {user_query}\nAnswer:"
+)
+
         return self.generate_response(prompt)
 
 # --- Multi-Agent Coordinator ---
@@ -165,6 +192,7 @@ class AgentCoordinator:
         self.metrics = ChatbotMetrics()  # Add metrics
         self.rl = ReinforcementLearner()
         self.last_interaction = None
+        _ = shared_ollama_model.invoke("Say hello")
 
     def route_query(self, user_query):
         query_lower = user_query.lower()
@@ -222,7 +250,7 @@ class AgentCoordinator:
 # --- Chatbot Metrics ---
 class ChatbotMetrics:
     def __init__(self):
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+        self.embedding_model = shared_embedding_model
         self.responses: List[Dict] = []
         self.feedback_scores = []
         self.metrics_file = os.path.join(os.path.dirname(__file__), "chatbot_metrics.pkl")

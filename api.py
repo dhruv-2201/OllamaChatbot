@@ -15,7 +15,7 @@ class Feedback(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     agent_type: str
-    metrics: Optional[Dict] = None
+    #metrics: Optional[Dict] = None
 
 @app.get("/")
 async def root():
@@ -30,13 +30,9 @@ async def chat(query: Query):
         # Get agent type from last interaction
         agent_type = coordinator.last_interaction['agent_type']
         
-        # Get current metrics
-        metrics = coordinator.metrics.get_metrics()
-        
         return ChatResponse(
             response=response,
             agent_type=agent_type,
-            metrics=metrics
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
